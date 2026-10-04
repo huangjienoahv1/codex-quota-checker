@@ -3,6 +3,7 @@ node_modules/
 *.log
 sea-prep.blob
 local/dist/
+desktop/dist/
 
 # 操作系统杂项
 .DS_Store

@@ -31,6 +31,11 @@
     }
     #refresh:hover { background: #444746; }
     #refresh:disabled { opacity: 0.6; cursor: wait; }
+    .settings { margin-bottom: 12px; color: #9aa0a6; font-size: 12px; }
+    .settings summary { cursor: pointer; color: #e8eaed; }
+    .settings-row { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+    #refresh-interval { background: #35373b; color: #e8eaed; border: 1px solid #5f6368; border-radius: 4px; padding: 3px; }
+    #settings-status { margin-top: 6px; line-height: 1.5; }
     .account-row { margin-bottom: 10px; }
     #account { width: 100%; margin-top: 4px; background: #35373b; color: #e8eaed; border: 1px solid #5f6368; border-radius: 4px; padding: 4px; }
     .status { color: #9aa0a6; padding: 8px 0; }
@@ -133,6 +138,13 @@
     <label for="account">查询账户</label>
     <select id="account" aria-label="选择要查询的账户"></select>
   </div>
+
+  <details class="settings">
+    <summary>刷新设置</summary>
+    <label class="settings-row"><span>后台自动刷新额度</span><input id="auto-refresh" type="checkbox" disabled></label>
+    <label class="settings-row" for="refresh-interval"><span>刷新间隔</span><select id="refresh-interval" disabled></select></label>
+    <div id="settings-status" role="status" aria-live="polite">正在读取设置…</div>
+  </details>
 
   <div id="status" class="status">查询中…</div>
 

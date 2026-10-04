@@ -1,0 +1,54 @@
+{
+  "name": "codex-quota-desktop",
+  "version": "1.0.0",
+  "description": "Codex 额度与重置卡桌面查询工具",
+  "author": "黄杰",
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win portable --x64",
+    "build:mac": "electron-builder --mac zip"
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.huangjie.codexquota",
+    "productName": "Codex 额度查询",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "ui/**",
+      "package.json",
+      "assets/icon.png"
+    ],
+    "extraResources": [
+      {
+        "from": "../local/codex-quota.js",
+        "to": "codex-quota.js"
+      },
+      {
+        "from": "../LICENSE",
+        "to": "LICENSE"
+      }
+    ],
+    "artifactName": "codex-quota-desktop-${os}-${arch}.${ext}",
+    "win": {
+      "target": "portable",
+      "icon": "assets/icon.ico",
+      "signExecutable": false
+    },
+    "mac": {
+      "target": "zip",
+      "category": "public.app-category.utilities",
+      "identity": null,
+      "icon": "assets/icon.icns"
+    }
+  }
+}

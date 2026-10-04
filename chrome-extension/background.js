@@ -8,14 +8,16 @@
  */
 import {
   ACCOUNT_SELECTION_REQUIRED, CACHE_KEY, CACHE_MAX_AGE_MS, SELECTION_KEY, QUERY_STATUS_KEY,
-  QUERY_MESSAGE, UPDATE_MESSAGE,
-  REFRESH_PERIOD_MINUTES, fetchAccount, fetchSessionToken, fetchUsage,
+  QUERY_MESSAGE, UPDATE_MESSAGE, SETTINGS_KEY, SETTINGS_MESSAGE,
+  REFRESH_INTERVALS, normalizeRefreshSettings,
+  fetchAccount, fetchSessionToken, fetchUsage,
   fetchCredits, applyBadge, validateUsage, validateCredits,
 } from './core.js';
 
 const ALARM_NAME = 'badge-refresh';
 let inFlight = null;
 let currentSnapshot = null;
+let alarmTask = Promise.resolve();
 
 /** 广播已确认身份的快照；弹窗关闭时没有监听者属于正常情况。 */
 async function publish(snapshot) {
@@ -154,11 +156,16 @@ async function queryQuota(selectedId) {
   }
 }
 
-/** 每次 worker 启动检查闹钟；已有闹钟不重建，避免不断延后刷新。 */
-async function ensureAlarm() {
-  if (!(await chrome.alarms.get(ALARM_NAME))) {
+/** 按持久化设置同步闹钟；关闭时删除，间隔不变时保留原计划。 */
+async function syncAlarm() {
+  const storedSettings = (await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY];
+  const settings = normalizeRefreshSettings(storedSettings);
+  const alarm = await chrome.alarms.get(ALARM_NAME);
+  if (!settings.enabled) {
+    await chrome.alarms.clear(ALARM_NAME);
+  } else if (!alarm || alarm.periodInMinutes !== settings.intervalMinutes) {
     await chrome.alarms.create(ALARM_NAME, {
-      periodInMinutes: REFRESH_PERIOD_MINUTES, delayInMinutes: 1,
+      periodInMinutes: settings.intervalMinutes, delayInMinutes: settings.intervalMinutes,
     });
   }
   const state = await chrome.storage.local.get([CACHE_KEY, QUERY_STATUS_KEY]);
@@ -166,13 +173,26 @@ async function ensureAlarm() {
   const lastError = state[QUERY_STATUS_KEY] && state[QUERY_STATUS_KEY].lastError;
   if (!inFlight && (lastError || (stored && (!Number.isFinite(stored.savedAt) ||
       Date.now() - stored.savedAt > CACHE_MAX_AGE_MS)))) {
-    await markBadgeError(lastError || '缓存已过期，等待刷新');
+    await markBadgeError(lastError || '缓存已过期，请刷新');
   }
+  return settings;
 }
 
-/** 事件入口失败必须可诊断，避免未处理 Promise 拒绝。 */
+/** 串行同步设置与闹钟，防止 worker 初始化和设置保存相互覆盖。 */
+function ensureAlarm(settings) {
+  const task = alarmTask.then(async () => {
+    if (settings) await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
+    return syncAlarm();
+  });
+  alarmTask = task.catch((err) => console.error('刷新设置同步失败：', err.message));
+  return task;
+}
+
+/** 后台事件查询前检查开关，关闭后即使有已排队的闹钟也不触发查询。 */
 function refreshFromEvent() {
-  ensureAlarm().then(() => queryQuota()).catch((err) => console.error('后台刷新失败：', err.message));
+  ensureAlarm().then((settings) => {
+    if (settings.enabled) return queryQuota();
+  }).catch((err) => console.error('后台刷新失败：', err.message));
 }
 
 chrome.runtime.onInstalled.addListener(refreshFromEvent);
@@ -182,7 +202,22 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (sender.id !== chrome.runtime.id || !message || message.type !== QUERY_MESSAGE) return false;
+  if (sender.id !== chrome.runtime.id || !message) return false;
+  if (message.type === SETTINGS_MESSAGE) {
+    const settings = message.settings;
+    if (!settings || typeof settings.enabled !== 'boolean' ||
+        !REFRESH_INTERVALS.includes(settings.intervalMinutes)) {
+      sendResponse({ ok: false, error: '自动刷新设置无效。' });
+      return false;
+    }
+    ensureAlarm(normalizeRefreshSettings(settings)).then((saved) => {
+      sendResponse({ ok: true, settings: saved });
+    }).catch((err) => {
+      sendResponse({ ok: false, error: '设置保存或定时任务同步失败：' + err.message });
+    });
+    return true;
+  }
+  if (message.type !== QUERY_MESSAGE) return false;
   if (message.accountId != null && typeof message.accountId !== 'string') {
     sendResponse({ ok: false, error: '账户标识无效。', clearContent: true });
     return false;

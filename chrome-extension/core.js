@@ -36,6 +36,18 @@ export const SELECTION_KEY = 'selectedAccount';
 export const QUERY_STATUS_KEY = 'lastQueryStatus';
 export const QUERY_MESSAGE = 'quota-query';
 export const UPDATE_MESSAGE = 'quota-update';
+export const SETTINGS_KEY = 'refreshSettings';
+export const SETTINGS_MESSAGE = 'quota-settings';
+export const REFRESH_INTERVALS = [5, 15, 30, 60];
+
+/** 历史版本未保存设置时沿用自动刷新；损坏设置恢复默认值。 */
+export function normalizeRefreshSettings(settings) {
+  return {
+    enabled: typeof settings?.enabled === 'boolean' ? settings.enabled : true,
+    intervalMinutes: REFRESH_INTERVALS.includes(settings?.intervalMinutes)
+      ? settings.intervalMinutes : REFRESH_PERIOD_MINUTES,
+  };
+}
 export const ACCOUNT_SELECTION_REQUIRED = 'ACCOUNT_SELECTION_REQUIRED';
 export const CACHE_MAX_AGE_MS = REFRESH_PERIOD_MINUTES * 60 * 1000;
 export const MSG_USAGE_SCHEMA = '限额接口返回结构未识别：没有有效用量窗口，请用 --json 或官方用量页核对。';

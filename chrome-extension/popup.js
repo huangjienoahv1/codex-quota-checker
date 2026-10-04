@@ -17,6 +17,7 @@ import {
   CACHE_MAX_AGE_MS,
   QUERY_MESSAGE,
   UPDATE_MESSAGE,
+  SETTINGS_KEY, SETTINGS_MESSAGE, REFRESH_INTERVALS, normalizeRefreshSettings,
   PLAN_TYPE_NAMES,
   clampPercent,
   formatDuration,
@@ -401,6 +402,55 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   return false;
 });
+/** 设置独立于账号查询，登录失效时仍可配置；后台确认闹钟同步后显示成功。 */
+async function initRefreshSettings() {
+  const toggle = document.getElementById('auto-refresh');
+  const interval = document.getElementById('refresh-interval');
+  const status = document.getElementById('settings-status');
+  let settings;
+  const render = () => {
+    toggle.checked = settings.enabled;
+    toggle.disabled = false;
+    interval.value = String(settings.intervalMinutes);
+    interval.disabled = !settings.enabled;
+  };
+  for (const minutes of REFRESH_INTERVALS) {
+    const option = document.createElement('option');
+    option.value = String(minutes);
+    option.textContent = `${minutes} 分钟`;
+    interval.appendChild(option);
+  }
+  try {
+    settings = normalizeRefreshSettings((await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY]);
+    render();
+    status.textContent = '自动保存；关闭后仍可手动刷新。已发出的查询会继续完成。';
+  } catch (err) {
+    status.textContent = '设置读取失败：' + err.message;
+    return;
+  }
+  const save = async () => {
+    const next = { enabled: toggle.checked, intervalMinutes: Number(interval.value) };
+    toggle.disabled = true;
+    interval.disabled = true;
+    status.textContent = '保存中…';
+    try {
+      const result = await chrome.runtime.sendMessage({ type: SETTINGS_MESSAGE, settings: next });
+      if (!result?.ok) throw new Error(result?.error || '后台没有返回设置结果');
+      settings = result.settings;
+      status.textContent = settings.enabled
+        ? `已保存，每 ${settings.intervalMinutes} 分钟自动刷新。`
+        : '已关闭后台自动刷新；仍可手动刷新。';
+    } catch (err) {
+      status.textContent = '设置未确认生效，请重新打开设置核对：' + err.message;
+    } finally {
+      render();
+    }
+  };
+  toggle.addEventListener('change', save);
+  interval.addEventListener('change', save);
+}
+
+initRefreshSettings();
 document.getElementById('refresh').addEventListener('click', () => load());
 document.getElementById('account').addEventListener('change', (event) => load(event.target.value));
 load();

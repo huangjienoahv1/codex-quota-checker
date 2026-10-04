@@ -12,6 +12,7 @@ on:
       - '.github/workflows/build-native.yml'
       - 'LICENSE'
       - 'readme.md'
+      - 'desktop/**'
 
 permissions:
   contents: read
@@ -76,5 +77,27 @@ jobs:
             local/${{ matrix.package }}.zip
             local/${{ matrix.package }}.tar.gz
             local/${{ matrix.package }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+      - name: 安装桌面构建依赖
+        working-directory: desktop
+        run: npm ci --no-audit --no-fund
+      - name: 打包 Windows 桌面窗口
+        if: runner.os == 'Windows'
+        working-directory: desktop
+        run: npm run build:win
+      - name: 打包 Mac 桌面窗口
+        if: runner.os == 'macOS'
+        working-directory: desktop
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build:mac -- --${TARGET_ARCH}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.package }}
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.zip
           if-no-files-found: error
           retention-days: 30

@@ -298,68 +298,58 @@ async function pauseIfInteractiveSeaLaunch() {
   });
 }
 
-/** 执行一次完整的查询流程（入口逻辑，见上方各分支说明） */
-async function runQuota() {
+/**
+ * 读取本机凭据并查询额度与重置卡，供命令行和桌面主进程共用。
+ * 返回原始接口数据及各自的错误信息；不打印、不写盘、不返回凭据。
+ * 凭据缺失直接抛错，两个接口独立校验，重置卡失败不掩盖成功的额度。
+ */
+async function queryQuota() {
   const auth = readCodexAuth();
   if (!auth || !auth.tokens || !auth.tokens.access_token) {
-    console.error(MSG_NO_OAUTH);
-    process.exitCode = 1;
-    return;
+    throw new Error(MSG_NO_OAUTH);
   }
   if (auth.auth_mode && auth.auth_mode !== 'chatgpt') {
-    console.error(`当前 auth_mode=${auth.auth_mode}，不是 ChatGPT 登录模式，无法查询订阅额度。`);
-    process.exitCode = 1;
-    return;
+    throw new Error(`当前 auth_mode=${auth.auth_mode}，不是 ChatGPT 登录模式，无法查询订阅额度。`);
   }
-
-  // 用量接口是主数据；重置卡接口失败不影响窗口展示，但失败原因要如实输出
-  const [usageResult, creditsResult] = await Promise.allSettled([
+  const results = await Promise.allSettled([
     fetchJson(auth.tokens, USAGE_URL),
     fetchJson(auth.tokens, CREDITS_URL),
   ]);
+  const output = {};
+  const keys = ['usage', 'credits'];
+  const validators = [validateUsage, validateCredits];
+  results.forEach((result, index) => {
+    const key = keys[index];
+    if (result.status === 'rejected') {
+      output[key + '_error'] = result.reason.message;
+      return;
+    }
+    // 保留原始结构用于 --json 排查，展示层必须先检查对应错误。
+    output[key] = result.value;
+    try {
+      validators[index](result.value);
+    } catch (err) {
+      output[key + '_error'] = err.message;
+    }
+  });
+  return output;
+}
 
-  let usageError = usageResult.status === 'rejected' ? usageResult.reason : null;
-  let creditsError = creditsResult.status === 'rejected' ? creditsResult.reason : null;
-  if (!usageError) {
-    try { validateUsage(usageResult.value); } catch (err) { usageError = err; }
-  }
-  if (!creditsError) {
-    try { validateCredits(creditsResult.value); } catch (err) { creditsError = err; }
-  }
-
+/** 执行命令行查询：保持 JSON 输出、失败退出码与重置卡部分失败的原有约定。 */
+async function runQuota() {
+  const output = await queryQuota();
   if (process.argv.includes('--json')) {
-    // 排查模式：直接输出两个接口的原始返回
-    const output = {};
-    if (usageResult.status === 'fulfilled') {
-      output.usage = usageResult.value;
-    } else {
-      output.usage_error = usageResult.reason.message;
-    }
-    if (creditsResult.status === 'fulfilled') {
-      output.credits = creditsResult.value;
-    } else {
-      output.credits_error = creditsResult.reason.message;
-    }
-    // 保留原始返回供排查，同时明确标注 HTTP 成功但结构不可识别的错误。
-    if (usageError) output.usage_error = usageError.message;
-    if (creditsError) output.credits_error = creditsError.message;
     console.log(JSON.stringify(output, null, 2));
-    if (usageError) {
-      process.exitCode = 1;
-    }
+    if (output.usage_error) process.exitCode = 1;
     return;
   }
-
-  if (usageError) {
-    console.error(`查询失败：${usageError.message}`);
+  if (output.usage_error) {
+    console.error(`查询失败：${output.usage_error}`);
     process.exitCode = 1;
     return;
   }
-
-  const data = usageResult.value;
-
-  const creditsData = !creditsError ? creditsResult.value : null;
-  renderQuota(data, creditsData, creditsError);
+  renderQuota(output.usage, output.credits_error ? null : output.credits,
+    output.credits_error ? new Error(output.credits_error) : null);
 }
 
 /** 程序入口：跑完查询流程后，若为双击启动的 exe 则暂停窗口再退出 */
@@ -374,4 +364,6 @@ async function main() {
   }
 }
 
-main();
+// 作为桌面主进程模块加载时不触发命令行查询。SEA 入口没有父模块。
+module.exports = { queryQuota };
+if (!module.parent) main();

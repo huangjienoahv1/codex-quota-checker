@@ -2,16 +2,38 @@
 
 查询当前 ChatGPT 账号的 Codex 用量限额：**5 小时窗口 / 每周窗口的剩余百分比（与官方界面同口径）、重置倒计时（精确到分钟）、每张重置卡（限额重置点）的到期时间**。
 
-Chrome 插件版额外提供：**工具栏图标角标常驻显示剩余百分比**（>30% 绿 / 10%-30% 黄 / ≤10% 红，后台每 30 分钟自动刷新）、同账户缓存优先展示、账户选择、Code review 配额 / Credit 余额 / 模型可用性、官方用量页直达、重置卡点击展开发放时间与说明。刷新失败或缓存过期时，角标显示 `!`，鼠标悬停可查看原因。
+Chrome 插件版额外提供：**工具栏图标角标常驻显示剩余百分比**（>30% 绿 / 10%-30% 黄 / ≤10% 红，后台默认每 30 分钟自动刷新，可在弹窗设置中关闭或调整间隔）、同账户缓存优先展示、账户选择、Code review 配额 / Credit 余额 / 模型可用性、官方用量页直达、重置卡点击展开发放时间与说明。刷新失败或缓存过期时，角标显示 `!`，鼠标悬停可查看原因。
 
-包含两个可独立使用的版本：
+包含三个可独立使用的版本：
 
 | 目录 | 形态 | 适合场景 |
 |---|---|---|
+| `desktop/` | 独立桌面窗口（免 Node，推荐） | 双击打开卡片界面，查看额度、倒计时和重置卡 |
 | `local/` | 本地命令行小程序（双击运行） | 平时在电脑上随手查，最稳定 |
 | `chrome-extension/` | Chrome 浏览器插件 | 角标常驻监控，点开看详情 |
 
-两个版本调用的是**同一组官方内部接口**，核心额度与重置卡展示口径一致；认证方式不同，插件额外提供上述展示与后台刷新功能。
+各版本调用的是**同一组官方内部接口**，核心额度与重置卡展示口径一致；认证方式不同，插件额外提供上述展示与后台刷新功能。
+
+## 桌面窗口版（推荐）
+
+Windows 下载 `codex-quota-desktop-win-x64.exe`，双击直接打开独立窗口；Mac 下载对应架构的 `codex-quota-desktop-mac-arm64.zip`（苹果芯片）或 `codex-quota-desktop-mac-x64.zip`（Intel），解压后把 `Codex 额度查询.app` 拖入应用程序目录即可打开。程序自带运行环境，使用者无需安装 Node.js。
+
+窗口显示两种额度的大号剩余百分比、进度条、重置时间与动态倒计时，以及按到期时间排序的可用重置卡。24 小时内到期的卡片明确标注；倒计时到零仅提示刷新，不推测额度已恢复。点击“刷新额度”重新采集，点击“打开官方用量页”在系统浏览器中查看。
+
+桌面版复用本地查询实现，仍需要 `~/.codex/auth.json` 中有效的 ChatGPT 登录凭据，并支持 `CODEX_HOME`。不内置登录、不读取 Mac 钥匙串、不打包凭据；接口请求只在主进程执行，页面无法读取令牌。查询结果只在内存展示，不缓存到磁盘。
+
+开发与构建（仅构建机需要 Node.js 与 npm）：
+
+```text
+cd desktop
+npm ci
+npm start
+npm run build:win
+```
+
+Mac 上执行 `npm run build:mac -- --arm64` 或 `npm run build:mac -- --x64`。产物在 `desktop/dist/`；Windows 为免安装便携 EXE，Mac 为含 `.app` 的 ZIP。Windows 未签名，Mac 未使用 Apple 开发者证书及公证，首次运行可能被系统拦截。
+
+GitHub 的 **Build native packages** 工作流同时上传命令行包与桌面包，桌面产物以 `desktop-` 开头区分。Mac 构建和运行需以实际 Actions 结果或 Mac 实测为准。
 
 ## 一、本地版使用方法
 
@@ -81,7 +103,9 @@ Windows 输出 `local/dist/codex-quota.exe`，Mac 输出 `local/dist/codex-quota
 2. 打开右上角的「开发者模式」开关；
 3. 点击左上角「加载已解压的扩展程序」，选择本项目的 `chrome-extension` 文件夹；
 4. 确保浏览器已登录 [chatgpt.com](https://chatgpt.com)（插件用网页登录会话查询，读不到本地 auth.json）；
-5. 点击浏览器右上角的插件图标即可查询，弹窗内每秒自动刷新重置倒计时和重置卡到期倒计时；工具栏角标每 30 分钟自动更新（也可点弹窗「刷新」立即更新）。
+5. 点击浏览器右上角的插件图标即可查询，弹窗内每秒自动刷新重置倒计时和重置卡到期倒计时；工具栏角标默认每 30 分钟自动更新（也可点弹窗「刷新」立即更新）。弹窗「刷新设置」可开关后台自动刷新，并选择 5、15、30、60 分钟间隔；设置保存在本机，后台确认保存后立即调整定时任务。关闭后不再定时查询或在浏览器启动时查询，打开弹窗、切换账户和手动刷新仍会查询；已经发出的查询会继续完成。缓存超过 30 分钟仍按过期数据提示，与刷新间隔无关。
+
+本项目使用「加载已解压的扩展程序」安装，代码修改后需在 `chrome://extensions` 点击该插件的「重新加载」；刷新设置控制额度数据更新。
 
 只有一个账户时自动查询；多个账户时，请先在弹窗选择“查询账户”。选择按当前登录用户保存，仅影响本工具，不代表或改变 ChatGPT 网页当前工作空间。后台不会猜测第一个账户，也不会跨登录用户沿用选择。
 
@@ -92,8 +116,8 @@ Windows 输出 `local/dist/codex-quota.exe`，Mac 输出 `local/dist/codex-quota
 - 限额接口：`GET https://chatgpt.com/backend-api/wham/usage`——这是 Codex CLI 自身轮询的内部限额接口（并非公开 API，社区工具 CodexBar 等均使用同一接口）；
 - 重置卡接口：`GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`——返回每张重置卡的明细，关键字段：`credits[].status`（available 为可用）、`credits[].title`（类型，如 Full reset）、`credits[].expires_at`（UTC 到期时间，工具内转本地时间显示）；
 - 本地版认证：读取 `~/.codex/auth.json` 中的 OAuth token，凭据仅在本次查询的内存中使用，**不落盘、不打印、不发给任何第三方**；
-- 插件版认证：先从 `chatgpt.com/api/auth/session` 拿网页会话令牌（accessToken），再带 `Authorization: Bearer` 调用 backend-api 接口；令牌仅存在请求内存中，不写入 `chrome.storage.local`。本地仅保存账户选择、查询结果、采集时间与失败信息，不上传任何第三方；
-- 插件权限说明：`alarms` 用于每 30 分钟自动刷新角标，`storage` 用于本地缓存上次查询结果（popup 秒开）；不需要任何敏感权限（无历史记录、无标签页内容读取）；
+- 插件版认证：先从 `chatgpt.com/api/auth/session` 拿网页会话令牌（accessToken），再带 `Authorization: Bearer` 调用 backend-api 接口；令牌仅存在请求内存中，不写入 `chrome.storage.local`。本地仅保存刷新设置、账户选择、查询结果、采集时间与失败信息，不上传任何第三方；
+- 插件权限说明：`alarms` 用于按设置间隔自动刷新角标，`storage` 用于本地缓存上次查询结果（popup 秒开）；不需要任何敏感权限（无历史记录、无标签页内容读取）；
 - 限额接口的关键结构：`rate_limit.primary_window`（5 小时窗口）、`rate_limit.secondary_window`（每周窗口），各含 `used_percent`（已用百分比，工具换算为「剩余」展示）、`reset_after_seconds`（重置倒计时秒数）、`reset_at`（重置时刻 Unix 时间戳）。
 
 ## 四、已知限制
