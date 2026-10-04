@@ -48,7 +48,15 @@
     }
     .plan { color: #8ab4f8; font-weight: 600; font-size: 14px; }
     #summary { font-weight: 600; }
-    .updated { color: #9aa0a6; font-size: 11px; text-align: right; margin-bottom: 10px; }
+    .meta2 {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      color: #9aa0a6;
+      font-size: 11px;
+      margin-bottom: 10px;
+    }
+    #email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .warn { color: #fdd663; margin: 0 0 8px; }
     .window { margin-bottom: 12px; }
     .window .row1 {
@@ -69,23 +77,46 @@
     .fill.mid { background: #fdd663; }
     .fill.high { background: #f28b82; }
     .reset { color: #9aa0a6; font-size: 12px; margin-top: 4px; }
+    .extra { color: #9aa0a6; font-size: 12px; margin-top: 8px; }
     .credits {
       border-top: 1px solid #35373b;
+      margin-top: 10px;
       padding-top: 8px;
       font-size: 12px;
     }
     .credits .credits-error { color: #f28b82; }
     .credits ul { list-style: none; margin: 6px 0 0; padding: 0; }
-    .credits li {
+    .credits details { padding: 3px 0; }
+    .credits summary {
       display: flex;
       justify-content: space-between;
       gap: 8px;
-      padding: 3px 0;
+      list-style: none;
+      cursor: pointer;
     }
+    .credits summary::-webkit-details-marker { display: none; }
+    .credits summary::after { content: "▸"; color: #9aa0a6; }
+    .credits details[open] summary::after { content: "▾"; }
     .card-title { color: #e8eaed; }
     .card-empty { color: #9aa0a6; }
     .card-expiry { color: #9aa0a6; white-space: nowrap; }
     .card-expiry.soon { color: #f28b82; }
+    .card-body {
+      color: #9aa0a6;
+      font-size: 11px;
+      line-height: 1.5;
+      padding: 4px 0 6px;
+    }
+    .purchase { margin-top: 8px; font-size: 12px; }
+    .purchase a { color: #8ab4f8; text-decoration: none; }
+    .footer {
+      margin-top: 12px;
+      border-top: 1px solid #35373b;
+      padding-top: 8px;
+      font-size: 12px;
+    }
+    .footer a { color: #8ab4f8; text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -102,8 +133,12 @@
       <span class="plan" id="plan"></span>
       <span id="summary"></span>
     </div>
-    <div class="updated" id="updated"></div>
+    <div class="meta2">
+      <span id="email"></span>
+      <span id="updated"></span>
+    </div>
     <div id="limit-warn" class="warn" hidden>⚠ 当前限额已用尽</div>
+    <div id="spend-warn" class="warn" hidden>⚠ 已达到消费上限（spend control）</div>
 
     <section class="window">
       <div class="row1">
@@ -123,12 +158,29 @@
       <div class="reset" id="reset-secondary"></div>
     </section>
 
+    <section class="window" id="section-cr" hidden>
+      <div class="row1">
+        <span>Code review 配额</span>
+        <span><span id="pct-cr"></span><span class="used" id="used-cr"></span></span>
+      </div>
+      <div class="bar"><div id="fill-cr" class="fill"></div></div>
+      <div class="reset" id="reset-cr"></div>
+    </section>
+
+    <div class="extra" id="models" hidden></div>
+    <div class="extra" id="credits-balance" hidden></div>
+
     <div class="credits" id="credits" hidden>
       <div id="credits-title"></div>
       <ul id="cards"></ul>
+      <div class="purchase" id="purchase" hidden></div>
+    </div>
+
+    <div class="footer">
+      <a href="https://chatgpt.com/codex/cloud/settings/analytics#usage" target="_blank" rel="noreferrer">打开官方用量页 ↗</a>
     </div>
   </div>
 
-  <script src="popup.js"></script>
+  <script type="module" src="popup.js"></script>
 </body>
 </html>

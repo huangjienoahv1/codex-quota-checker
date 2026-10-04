@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Codex 额度查询",
-  "version": "1.0.3",
-  "description": "一键查询当前 ChatGPT 账号的 Codex 5 小时 / 每周限额用量与重置时间",
+  "version": "1.1.0",
+  "description": "一键查询当前 ChatGPT 账号的 Codex 5 小时 / 每周限额用量与重置时间，角标常驻显示剩余百分比",
   "host_permissions": ["https://chatgpt.com/*"],
+  "permissions": ["alarms", "storage"],
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -17,5 +18,9 @@
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
   }
 }

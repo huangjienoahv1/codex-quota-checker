@@ -1,156 +1,45 @@
 'use strict';
 
 /**
- * Codex 额度查询 Chrome 插件（popup 逻辑）
+ * Codex 额度查询 Chrome 插件（popup 界面逻辑）
  *
- * 认证链路（与 ChatGPT 网页应用完全一致，这是本次修复的关键）：
- *   chatgpt.com 的 backend-api 接口不认裸 Cookie，网页应用自己是先从
- *   /api/auth/session 拿会话令牌（accessToken），再带 Authorization: Bearer
- *   调用所有 backend-api 接口。本插件复刻同样的链路：
- *   1. GET /api/auth/session 拿会话令牌（要求浏览器已登录 chatgpt.com）；
- *   2. GET /backend-api/accounts/check/v4-2023-04-27（带 Bearer）定位 account_id；
- *   3. GET /backend-api/wham/usage（带 Bearer + chatgpt-account-id 头）拿限额与重置时间；
- *   4. GET /backend-api/wham/rate-limit-reset-credits 拿每张重置卡的到期时间，
- *      该步失败只影响重置卡区域，不影响窗口额度展示。
- *   渲染结果后每秒本地刷新一次倒计时，不额外发请求。
+ * 数据来源与调用链（认证/接口封装在 core.js，与 background.js 共用）：
+ *   打开 popup → 先读本地缓存（chrome.storage.local.lastQuota）秒显上次结果
+ *   → 再走完整链路刷新：会话令牌 → accounts/check 定位账户 → wham/usage
+ *   → wham/rate-limit-reset-credits（重置卡，失败不影响主数据）。
+ *   刷新成功后更新缓存并把「剩余用量」写到工具栏图标角标。
  *
- * 与本地命令行版（../local/codex-quota.js）的差异：
- *   本地版直接用 ~/.codex/auth.json 的 Codex OAuth token；插件用网页会话令牌。
  * 展示口径：与官方界面一致，以「剩余」为主（剩余 = 100 - used_percent）。
  *
  * @author 黄杰
  */
 
-/** 网页会话令牌接口：ChatGPT 网页应用从这里拿 Bearer token */
-const SESSION_URL = 'https://chatgpt.com/api/auth/session';
-/** Codex CLI / 网页端共用的内部限额接口 */
-const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
-/** Codex 内部重置卡明细接口：返回每张重置卡的状态与到期时间 */
-const CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits';
-/** 网页端获取当前账户信息的接口，用于拿到 chatgpt-account-id */
-const ACCOUNTS_CHECK_URL = 'https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27';
+import {
+  EXPIRING_SOON_MS,
+  PLAN_TYPE_NAMES,
+  applyBadge,
+  clampPercent,
+  fetchAccount,
+  fetchCredits,
+  fetchSessionToken,
+  fetchUsage,
+  formatDuration,
+  formatUnix,
+} from './core.js';
 
-/** 重置卡剩余有效期不足该毫秒数时，标记「即将到期」 */
-const EXPIRING_SOON_MS = 24 * 60 * 60 * 1000;
-
-/** plan_type 到中文名称的映射；未收录的值原样展示 */
-const PLAN_TYPE_NAMES = {
-  free: 'Free',
-  prolite: 'Pro Lite',
-  plus: 'Plus',
-  pro: 'Pro',
-  team: 'Team',
-  business: 'Business',
-  enterprise: 'Enterprise',
-};
+/** 官方用量页地址：弹窗底部链接与重置卡购买入口共用 */
+const OFFICIAL_USAGE_URL = 'https://chatgpt.com/codex/cloud/settings/analytics#usage';
+/** 本地缓存键：上次完整查询结果 */
+const CACHE_KEY = 'lastQuota';
 
 /** 每秒刷新倒计时的定时器句柄；每次重新渲染前先清掉旧定时器 */
 let countdownTimer = null;
 /**
  * 当前渲染状态，供每秒 tick 更新倒计时：
- * windows: { primary: 重置时刻ms|null, secondary: ... }
+ * windows: { primary: 重置时刻ms|null, secondary: ..., cr: ... }
  * cards:   [{ el: 到期文本元素, expiresAtMs }]
  */
 let viewState = null;
-
-/** 把毫秒时长格式化为中文时长，例如 2天3小时 / 5小时41分 / 8分钟 */
-function formatDuration(ms) {
-  const sec = Math.max(0, Math.floor(ms / 1000));
-  const days = Math.floor(sec / 86400);
-  const hours = Math.floor((sec % 86400) / 3600);
-  const minutes = Math.floor((sec % 3600) / 60);
-  if (days > 0) return `${days}天${hours}小时`;
-  if (hours > 0) return `${hours}小时${minutes}分`;
-  if (minutes > 0) return `${minutes}分钟`;
-  return `${sec}秒`;
-}
-
-/** 把 Unix 毫秒时间戳格式化为本地 MM-dd HH:mm */
-function formatUnix(ms) {
-  const d = new Date(ms);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-/** 把百分比限制在 0-100 区间 */
-function clampPercent(value) {
-  return Math.max(0, Math.min(100, value));
-}
-
-/**
- * 从网页会话拿 Bearer 令牌（与 ChatGPT 网页应用相同的来源）。
- * 拿不到令牌说明登录态不可用，给出明确提示。
- */
-async function fetchSessionToken() {
-  let res;
-  try {
-    res = await fetch(SESSION_URL, { credentials: 'include' });
-  } catch (err) {
-    throw new Error('网络请求失败，请检查网络或代理后重试。');
-  }
-  if (!res.ok) {
-    throw new Error(`会话接口返回 HTTP ${res.status}。请打开 chatgpt.com 确认已登录后重试。`);
-  }
-  const data = await res.json();
-  if (!data || !data.accessToken) {
-    throw new Error(
-      '未获取到网页会话令牌。\n请在浏览器打开 chatgpt.com 确认已登录（能正常聊天），然后点「刷新」。'
-    );
-  }
-  return data;
-}
-
-/**
- * 带 Bearer 令牌调用 backend-api GET 接口并解析 JSON。
- * accountId 为空时不带 chatgpt-account-id 头。失败抛出带可读信息的错误。
- */
-async function fetchApiJson(token, url, accountId, endpointLabel) {
-  const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
-  if (accountId) {
-    // 多账户/团队计划下需要账户请求头定位到当前账户
-    headers['chatgpt-account-id'] = accountId;
-  }
-  const res = await fetch(url, { credentials: 'include', headers });
-  if (res.status === 401 || res.status === 403) {
-    throw new Error(
-      `${endpointLabel}无权访问（HTTP ${res.status}）。\n登录可能已过期：请刷新 chatgpt.com 页面确认能正常使用后，再点「刷新」。`
-    );
-  }
-  if (!res.ok) {
-    throw new Error(`${endpointLabel}返回 HTTP ${res.status}`);
-  }
-  return res.json();
-}
-
-/**
- * 通过 accounts/check 定位当前账户（返回含 account_id 的账户对象）。
- * 兼容两种结构：标准结构的 entry.account，以及扁平结构的 entry 本身。
- * 返回了 JSON 但找不到 account_id 时，给出带诊断信息的明确错误。
- */
-async function fetchAccount(token) {
-  const data = await fetchApiJson(token, ACCOUNTS_CHECK_URL, null, 'accounts/check');
-  const entries = data && data.accounts ? Object.values(data.accounts) : [];
-  for (const entry of entries) {
-    const account = entry && (entry.account || entry);
-    if (account && account.account_id) {
-      return account;
-    }
-  }
-  const topKeys = data && typeof data === 'object' ? Object.keys(data).join(', ') : typeof data;
-  throw new Error(
-    `accounts/check 返回中未找到 account_id（顶层键: ${topKeys}）。\n请截图本提示反馈。`
-  );
-}
-
-/** 调用限额接口（带 Bearer + 账户头） */
-function fetchUsage(token, accountId) {
-  return fetchApiJson(token, USAGE_URL, accountId, '限额接口');
-}
-
-/** 调用重置卡明细接口（带 Bearer + 账户头） */
-function fetchCredits(token, accountId) {
-  return fetchApiJson(token, CREDITS_URL, accountId, '重置卡接口');
-}
 
 /** 渲染单个限额窗口：主口径为「剩余」，进度条长度表示剩余量 */
 function renderWindow(prefix, win) {
@@ -186,20 +75,26 @@ function renderWindow(prefix, win) {
 }
 
 /**
- * 渲染重置卡明细列表。
- * creditsData 为空说明该接口本次获取失败：若限额响应里带有可用数量汇总，
- * 则仍显示数量并注明无法显示每张到期时间；失败原因原样展示，不静默跳过。
+ * 渲染重置卡明细列表（点击卡片展开发放时间与说明）。
+ * creditsData 为空且无错误 = 秒开缓存中没有明细：隐藏该区域，等刷新补全；
+ * creditsData 为空且有错误 = 本次刷新失败：显示失败原因，不静默跳过。
  */
 function renderCredits(usage, creditsData, creditsError) {
   const sectionEl = document.getElementById('credits');
   const titleEl = document.getElementById('credits-title');
   const listEl = document.getElementById('cards');
+  const purchaseEl = document.getElementById('purchase');
 
-  sectionEl.hidden = false;
+  purchaseEl.hidden = true;
   listEl.textContent = '';
 
   if (!creditsData) {
-    const reason = creditsError && creditsError.message ? creditsError.message : '未知原因';
+    if (!creditsError) {
+      // 缓存秒开路径：没有明细就不显示，等本次刷新成功后补全
+      sectionEl.hidden = true;
+      return;
+    }
+    const reason = creditsError.message || '未知原因';
     const fallbackCount =
       usage && usage.rate_limit_reset_credits && Number.isFinite(usage.rate_limit_reset_credits.available_count)
         ? usage.rate_limit_reset_credits.available_count
@@ -214,6 +109,7 @@ function renderCredits(usage, creditsData, creditsError) {
     errItem.className = 'card-empty';
     errItem.textContent = reason;
     listEl.appendChild(errItem);
+    sectionEl.hidden = false;
     return;
   }
 
@@ -235,21 +131,54 @@ function renderCredits(usage, creditsData, creditsError) {
     emptyItem.className = 'card-empty';
     emptyItem.textContent = '当前没有可用重置卡';
     listEl.appendChild(emptyItem);
+    sectionEl.hidden = false;
     return;
   }
 
   for (const card of available) {
     const item = document.createElement('li');
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+
     const titleSpan = document.createElement('span');
     titleSpan.className = 'card-title';
     titleSpan.textContent = card.title || '重置卡';
+
     const expirySpan = document.createElement('span');
     expirySpan.className = 'card-expiry';
-    item.appendChild(titleSpan);
-    item.appendChild(expirySpan);
+
+    summary.appendChild(titleSpan);
+    summary.appendChild(expirySpan);
+
+    // 展开区：卡片说明 + 发放时间（时间解析失败就不显示该行）
+    const body = document.createElement('div');
+    body.className = 'card-body';
+    const grantedMs = card.granted_at ? Date.parse(card.granted_at) : NaN;
+    const bodyLines = [
+      card.description || null,
+      Number.isFinite(grantedMs) ? `发放于 ${formatUnix(grantedMs)}` : null,
+    ].filter(Boolean);
+    body.textContent = bodyLines.join(' · ') || '无更多说明';
+
+    details.appendChild(summary);
+    details.appendChild(body);
+    item.appendChild(details);
     listEl.appendChild(item);
     viewState.cards.push({ el: expirySpan, expiresAtMs: card.expireMs });
   }
+
+  // 官方允许购买"立即重置"时给出入口
+  if (creditsData.immediate_reset_purchase_eligible === true) {
+    const link = document.createElement('a');
+    link.href = OFFICIAL_USAGE_URL;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    link.textContent = '当前账号可购买立即重置，前往官方用量页 ↗';
+    purchaseEl.appendChild(link);
+    purchaseEl.hidden = false;
+  }
+
+  sectionEl.hidden = false;
 }
 
 /** 每秒刷新一次：窗口重置倒计时 + 每张重置卡的到期倒计时 */
@@ -285,8 +214,12 @@ function updateCountdowns() {
   }
 }
 
-/** 渲染完整结果 */
-function renderQuota(data, creditsData, creditsError) {
+/**
+ * 渲染完整结果。
+ * cached = true 表示数据来自本地缓存（秒开），"更新于"会标注缓存，
+ * 等本次刷新成功后会用最新数据整体重渲染。
+ */
+function renderQuota(data, creditsData, creditsError, cached = false) {
   viewState = { windows: {}, cards: [] };
   const rl = data.rate_limit || {};
 
@@ -299,11 +232,52 @@ function renderQuota(data, creditsData, creditsError) {
   document.getElementById('summary').textContent =
     remainings.length > 0 ? `剩余用量 ${Math.min(...remainings).toFixed(0)}%` : '';
 
-  document.getElementById('updated').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
+  document.getElementById('email').textContent = data.email || '';
+  document.getElementById('updated').textContent =
+    `更新于 ${new Date().toLocaleTimeString('zh-CN')}${cached ? '（缓存）' : ''}`;
   document.getElementById('limit-warn').hidden = !rl.limit_reached;
+  document.getElementById('spend-warn').hidden = !(data.spend_control && data.spend_control.reached);
 
   renderWindow('primary', rl.primary_window);
   renderWindow('secondary', rl.secondary_window);
+
+  // Code review 配额：接口里该字段为空就不显示整块
+  const crSection = document.getElementById('section-cr');
+  const cr = data.code_review_rate_limit;
+  const hasCr = !!(cr && typeof cr.used_percent === 'number');
+  crSection.hidden = !hasCr;
+  if (hasCr) {
+    renderWindow('cr', cr);
+  }
+
+  // 模型可用性：列出各模型状态，不可用的标注恢复时间
+  const modelsEl = document.getElementById('models');
+  const modelEntries = data.model_usage ? Object.entries(data.model_usage) : [];
+  if (modelEntries.length > 0) {
+    const text = modelEntries
+      .map(([name, info]) => {
+        if (info && info.available) {
+          return `${name} ✓`;
+        }
+        const atMs = info && info.available_at ? Date.parse(info.available_at) : NaN;
+        return Number.isFinite(atMs) ? `${name} ✗（${formatUnix(atMs)} 后可用）` : `${name} ✗`;
+      })
+      .join('、');
+    modelsEl.textContent = `模型：${text}`;
+    modelsEl.hidden = false;
+  } else {
+    modelsEl.hidden = true;
+  }
+
+  // Credit 余额：只在账号确实持有 credit 时显示
+  const balanceEl = document.getElementById('credits-balance');
+  if (data.credits && data.credits.has_credits && data.credits.balance != null) {
+    balanceEl.textContent = `Credit 余额：${data.credits.balance}`;
+    balanceEl.hidden = false;
+  } else {
+    balanceEl.hidden = true;
+  }
+
   renderCredits(data, creditsData, creditsError);
 
   document.getElementById('content').hidden = false;
@@ -323,15 +297,45 @@ function showError(message) {
   document.getElementById('content').hidden = true;
 }
 
+/** 把本次成功结果写入本地缓存，供下次打开秒显和后台角标刷新合并 */
+async function saveCache(usage, creditsData) {
+  try {
+    await chrome.storage.local.set({
+      [CACHE_KEY]: { usage, credits: creditsData, savedAt: Date.now() },
+    });
+  } catch {
+    // 缓存写入失败不影响本次展示
+  }
+}
+
+/** 秒开：先渲染上次缓存的结果（若有），再走完整刷新 */
+async function showCache() {
+  try {
+    const stored = (await chrome.storage.local.get(CACHE_KEY))[CACHE_KEY];
+    if (stored && stored.usage) {
+      document.getElementById('status').hidden = true;
+      renderQuota(stored.usage, stored.credits || null, null, true);
+    }
+  } catch {
+    // 缓存读取失败不影响正常查询
+  }
+}
+
 /**
- * 入口：拿网页会话令牌 → 定位账户 → 调限额接口 → 渲染；
+ * 入口：拿网页会话令牌 → 定位账户 → 调限额接口 → 渲染并写缓存/角标；
  * 重置卡尽力获取，失败不影响主数据；每一步失败都有可操作的提示。
  */
 async function load() {
   const statusEl = document.getElementById('status');
-  statusEl.hidden = false;
-  statusEl.className = 'status';
-  statusEl.textContent = '查询中…';
+  if (statusEl.hidden) {
+    // 秒开模式下不打断已展示的缓存内容，只在头部显示刷新状态
+    statusEl.className = 'status';
+    statusEl.textContent = '刷新中…';
+    statusEl.hidden = false;
+  } else {
+    statusEl.className = 'status';
+    statusEl.textContent = '查询中…';
+  }
   document.getElementById('content').hidden = true;
 
   try {
@@ -351,8 +355,15 @@ async function load() {
 
     statusEl.hidden = true;
     renderQuota(usage, creditsData, creditsError);
+    await saveCache(usage, creditsData);
+    await applyBadge(usage);
   } catch (err) {
-    if (err instanceof TypeError) {
+    // 秒开失败时保留缓存内容，仅把错误写进头部状态行
+    const cachedVisible = !document.getElementById('content').hidden;
+    if (cachedVisible) {
+      statusEl.className = 'status';
+      statusEl.textContent = `刷新失败：${err instanceof TypeError ? '网络请求失败' : err.message.split('\n')[0]}`;
+    } else if (err instanceof TypeError) {
       showError('网络请求失败，请检查网络或代理后重试。');
     } else {
       showError(err.message);
@@ -361,4 +372,5 @@ async function load() {
 }
 
 document.getElementById('refresh').addEventListener('click', load);
+showCache();
 load();
