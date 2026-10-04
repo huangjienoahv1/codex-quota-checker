@@ -39,6 +39,24 @@ Codex 额度查询    2026/10/4 10:22:02
 
 排查问题时可用命令行模式查看接口原始数据：`node local\codex-quota.js --json`（同时输出限额与重置卡两个接口的原始返回）。
 
+### 打包成免 Node 的单文件 exe（可选）
+
+exe 只封装查询逻辑，**运行它的机器仍需安装 Codex CLI 并用 ChatGPT 账号登录过**（存在 `~/.codex/auth.json`）——适合发给同样在用 Codex 的合租卡友。
+
+构建（构建机需 Node.js ≥ 22，过程需联网拉取 postject，仅构建期依赖）：
+
+```text
+node scripts/build-exe.js
+```
+
+产物：`local/dist/codex-quota.exe`（约 100 MB，单文件）。双击运行，查完按回车退出；命令行带参数（如 `--json`）则不暂停，可直接脚本化调用。
+
+注意事项：
+
+- exe 未做代码签名，首次运行可能触发 Windows SmartScreen 提示：点「更多信息 → 仍要运行」；
+- 个别杀毒软件可能对注入式打包的 exe 误报，加入白名单即可；
+- 产物架构与构建机一致（x64 机器构建出 x64 exe）。
+
 > 重置卡的标题语言跟随账号语言（中文账号显示「完全重置（每周 + 5 小时）」，英文账号显示「Full reset (Weekly + 5 hr)」）。
 
 ## 二、Chrome 插件安装方法

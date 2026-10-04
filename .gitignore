@@ -1,6 +1,8 @@
 # 依赖与构建产物
 node_modules/
 *.log
+sea-prep.blob
+local/dist/
 
 # 操作系统杂项
 .DS_Store

@@ -238,8 +238,39 @@ function renderQuota(data, creditsData, creditsError) {
   console.log('');
 }
 
-/** 程序入口：解析参数 → 读凭据 → 并行调两个接口 → 输出结果 */
-async function main() {
+/**
+ * 双击 exe 启动时暂停窗口，避免输出一闪而过。
+ * 只在同时满足以下条件时暂停：
+ *   1. 运行在 SEA 打包产物内（node:sea.isSea()，普通 node 调用不暂停，便于脚本化使用）；
+ *   2. 启动时未带任何参数（带参数 = 脚本化调用，正常退出）。
+ * 等待回车或输入流关闭后退出。
+ */
+async function pauseIfInteractiveSeaLaunch() {
+  if (process.argv.length > 2) {
+    return;
+  }
+  let isSea = false;
+  try {
+    isSea = require('node:sea').isSea();
+  } catch {
+    // 旧版本 Node 没有 node:sea 模块，说明不是 SEA 产物
+  }
+  if (!isSea) {
+    return;
+  }
+  process.stdout.write('\n按回车键退出…');
+  await new Promise((resolve) => {
+    const rl = require('node:readline').createInterface({ input: process.stdin });
+    rl.once('line', () => {
+      rl.close();
+      resolve();
+    });
+    rl.once('close', resolve);
+  });
+}
+
+/** 执行一次完整的查询流程（入口逻辑，见上方各分支说明） */
+async function runQuota() {
   const auth = readCodexAuth();
   if (!auth || !auth.tokens || !auth.tokens.access_token) {
     console.error(MSG_NO_OAUTH);
@@ -294,6 +325,15 @@ async function main() {
   const creditsData = creditsResult.status === 'fulfilled' ? creditsResult.value : null;
   const creditsError = creditsResult.status === 'rejected' ? creditsResult.reason : null;
   renderQuota(data, creditsData, creditsError);
+}
+
+/** 程序入口：跑完查询流程后，若为双击启动的 exe 则暂停窗口再退出 */
+async function main() {
+  try {
+    await runQuota();
+  } finally {
+    await pauseIfInteractiveSeaLaunch();
+  }
 }
 
 main();
