@@ -1,0 +1,8 @@
+# 统一换行风格：文本文件一律 LF，避免跨平台提交时混合换行
+* text=auto eol=lf
+
+# Windows 批处理需要 CRLF
+*.bat text eol=crlf
+
+# 二进制文件不做换行转换
+*.png binary

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      width: 340px;
+      margin: 0;
+      padding: 14px 16px;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      color: #e8eaed;
+      background: #1e1f22;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    header h1 { font-size: 15px; margin: 0; }
+    #refresh {
+      background: #35373b;
+      color: #e8eaed;
+      border: 1px solid #5f6368;
+      border-radius: 6px;
+      padding: 3px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    #refresh:hover { background: #444746; }
+    .status { color: #9aa0a6; padding: 8px 0; }
+    .error {
+      color: #f28b82;
+      background: #2d2223;
+      border: 1px solid #5c2b29;
+      border-radius: 6px;
+      padding: 8px 10px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    .headline {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 2px;
+    }
+    .plan { color: #8ab4f8; font-weight: 600; font-size: 14px; }
+    #summary { font-weight: 600; }
+    .updated { color: #9aa0a6; font-size: 11px; text-align: right; margin-bottom: 10px; }
+    .warn { color: #fdd663; margin: 0 0 8px; }
+    .window { margin-bottom: 12px; }
+    .window .row1 {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 4px;
+    }
+    .used { color: #9aa0a6; font-size: 11px; margin-left: 6px; }
+    .bar {
+      height: 8px;
+      background: #35373b;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    /* 进度条以「剩余」为口径：条越长剩余越多，与官方界面一致 */
+    .fill { height: 100%; border-radius: 4px; background: #81c995; }
+    .fill.mid { background: #fdd663; }
+    .fill.high { background: #f28b82; }
+    .reset { color: #9aa0a6; font-size: 12px; margin-top: 4px; }
+    .credits {
+      border-top: 1px solid #35373b;
+      padding-top: 8px;
+      font-size: 12px;
+    }
+    .credits .credits-error { color: #f28b82; }
+    .credits ul { list-style: none; margin: 6px 0 0; padding: 0; }
+    .credits li {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 3px 0;
+    }
+    .card-title { color: #e8eaed; }
+    .card-empty { color: #9aa0a6; }
+    .card-expiry { color: #9aa0a6; white-space: nowrap; }
+    .card-expiry.soon { color: #f28b82; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Codex 额度查询</h1>
+    <button id="refresh">刷新</button>
+  </header>
+
+  <div id="status" class="status">查询中…</div>
+
+  <div id="content" hidden>
+    <div class="headline">
+      <span class="plan" id="plan"></span>
+      <span id="summary"></span>
+    </div>
+    <div class="updated" id="updated"></div>
+    <div id="limit-warn" class="warn" hidden>⚠ 当前限额已用尽</div>
+
+    <section class="window">
+      <div class="row1">
+        <span>5 小时窗口</span>
+        <span><span id="pct-primary"></span><span class="used" id="used-primary"></span></span>
+      </div>
+      <div class="bar"><div id="fill-primary" class="fill"></div></div>
+      <div class="reset" id="reset-primary"></div>
+    </section>
+
+    <section class="window">
+      <div class="row1">
+        <span>每周窗口</span>
+        <span><span id="pct-secondary"></span><span class="used" id="used-secondary"></span></span>
+      </div>
+      <div class="bar"><div id="fill-secondary" class="fill"></div></div>
+      <div class="reset" id="reset-secondary"></div>
+    </section>
+
+    <div class="credits" id="credits" hidden>
+      <div id="credits-title"></div>
+      <ul id="cards"></ul>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
