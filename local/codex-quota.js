@@ -39,6 +39,8 @@ const REQUEST_TIMEOUT_MS = 15000;
 const BAR_WIDTH = 12;
 /** 重置卡剩余有效期不足该毫秒数时，标记「即将到期」 */
 const EXPIRING_SOON_MS = 24 * 60 * 60 * 1000;
+const MSG_USAGE_SCHEMA = '接口返回中没有有效限额窗口，结构可能已变化。用 --json 查看原始返回。';
+const MSG_CREDITS_SCHEMA = '重置卡接口返回结构未识别，无法确认卡片数量与到期时间。';
 
 /** 凭据缺失或非 ChatGPT 登录模式时的提示 */
 const MSG_NO_OAUTH =
@@ -103,7 +105,12 @@ async function fetchJson(tokens, url) {
     throw new Error(`网络请求失败：${err.message}（请检查网络或代理）`);
   }
 
-  const bodyText = await res.text();
+  let bodyText;
+  try {
+    bodyText = await res.text();
+  } catch (err) {
+    throw new Error(`读取接口响应失败：${err.message}（请检查网络或代理）`);
+  }
 
   if (res.status === 401) {
     throw new Error(MSG_TOKEN_EXPIRED);
@@ -119,6 +126,24 @@ async function fetchJson(tokens, url) {
   }
 }
 
+/** 校验主数据；至少一个有效窗口，存在但损坏的窗口不能当作成功。 */
+function validateUsage(data) {
+  const rl = data && data.rate_limit;
+  const windows = rl ? [rl.primary_window, rl.secondary_window] : [];
+  if (!windows.some((win) => win && Number.isFinite(win.used_percent)) ||
+      windows.some((win) => win != null && !Number.isFinite(win.used_percent))) {
+    throw new Error(MSG_USAGE_SCHEMA);
+  }
+}
+
+/** 空卡片数组是正常结果；缺失数组或损坏卡片必须报告结构错误。 */
+function validateCredits(data) {
+  if (!data || !Array.isArray(data.credits) ||
+      data.credits.some((card) => !card || typeof card.status !== 'string')) {
+    throw new Error(MSG_CREDITS_SCHEMA);
+  }
+}
+
 /** 把百分比限制在 0-100 区间，容忍接口返回浮点或越界值 */
 function clampPercent(value) {
   return Math.max(0, Math.min(100, value));
@@ -129,7 +154,7 @@ function clampPercent(value) {
  * 同时标注已用百分比、重置时刻和重置倒计时。
  */
 function renderWindow(label, win) {
-  if (!win || typeof win.used_percent !== 'number') {
+  if (!win || !Number.isFinite(win.used_percent)) {
     console.log(`${label}：无数据`);
     return;
   }
@@ -154,14 +179,18 @@ function renderWindow(label, win) {
  * creditsData 为空说明该接口本次获取失败，此时明确输出失败原因，不静默跳过。
  * expires_at 为 UTC ISO 时间字符串，统一转成本地时间显示。
  */
-function renderCredits(creditsData, creditsError) {
+function renderCredits(creditsData, creditsError, usage) {
   if (!creditsData) {
     const reason = creditsError && creditsError.message ? creditsError.message : '未知原因';
+    const count = usage && usage.rate_limit_reset_credits && usage.rate_limit_reset_credits.available_count;
+    if (Number.isFinite(count)) {
+      console.log(`重置卡：可用 ${count} 张（汇总数量；明细获取失败，无法显示每张到期时间）`);
+    }
     console.log(`重置卡信息获取失败：${reason}`);
     return;
   }
 
-  const available = (creditsData.credits || [])
+  const available = creditsData.credits
     .filter((card) => card.status === 'available')
     .map((card) => ({ ...card, expireMs: Date.parse(card.expires_at) }))
     // 到期时间缺失或无法解析的卡片排到最后，避免 NaN 参与排序和展示
@@ -218,7 +247,7 @@ function renderQuota(data, creditsData, creditsError) {
 
   // 顶部「剩余用量」取两个窗口剩余值中较小的一个，与官方界面口径一致
   const remainings = [rl.primary_window, rl.secondary_window]
-    .filter((win) => win && typeof win.used_percent === 'number')
+    .filter((win) => win && Number.isFinite(win.used_percent))
     .map((win) => 100 - clampPercent(win.used_percent));
   const overallText =
     remainings.length > 0 ? `    剩余用量 ${Math.min(...remainings).toFixed(0)}%` : '';
@@ -234,7 +263,7 @@ function renderQuota(data, creditsData, creditsError) {
   renderWindow('5 小时窗口', rl.primary_window);
   renderWindow('每周窗口', rl.secondary_window);
 
-  renderCredits(creditsData, creditsError);
+  renderCredits(creditsData, creditsError, data);
   console.log('');
 }
 
@@ -277,7 +306,7 @@ async function runQuota() {
     process.exitCode = 1;
     return;
   }
-  if (auth.auth_mode && auth.auth_mode !== 'chatgpt' && !process.argv.includes('--json')) {
+  if (auth.auth_mode && auth.auth_mode !== 'chatgpt') {
     console.error(`当前 auth_mode=${auth.auth_mode}，不是 ChatGPT 登录模式，无法查询订阅额度。`);
     process.exitCode = 1;
     return;
@@ -288,6 +317,15 @@ async function runQuota() {
     fetchJson(auth.tokens, USAGE_URL),
     fetchJson(auth.tokens, CREDITS_URL),
   ]);
+
+  let usageError = usageResult.status === 'rejected' ? usageResult.reason : null;
+  let creditsError = creditsResult.status === 'rejected' ? creditsResult.reason : null;
+  if (!usageError) {
+    try { validateUsage(usageResult.value); } catch (err) { usageError = err; }
+  }
+  if (!creditsError) {
+    try { validateCredits(creditsResult.value); } catch (err) { creditsError = err; }
+  }
 
   if (process.argv.includes('--json')) {
     // 排查模式：直接输出两个接口的原始返回
@@ -302,28 +340,25 @@ async function runQuota() {
     } else {
       output.credits_error = creditsResult.reason.message;
     }
+    // 保留原始返回供排查，同时明确标注 HTTP 成功但结构不可识别的错误。
+    if (usageError) output.usage_error = usageError.message;
+    if (creditsError) output.credits_error = creditsError.message;
     console.log(JSON.stringify(output, null, 2));
-    if (usageResult.status === 'rejected') {
+    if (usageError) {
       process.exitCode = 1;
     }
     return;
   }
 
-  if (usageResult.status === 'rejected') {
-    console.error(`查询失败：${usageResult.reason.message}`);
+  if (usageError) {
+    console.error(`查询失败：${usageError.message}`);
     process.exitCode = 1;
     return;
   }
 
   const data = usageResult.value;
-  if (!data || !data.rate_limit) {
-    console.error('接口返回中未包含限额数据，结构可能已变化。用 --json 查看原始返回。');
-    process.exitCode = 1;
-    return;
-  }
 
-  const creditsData = creditsResult.status === 'fulfilled' ? creditsResult.value : null;
-  const creditsError = creditsResult.status === 'rejected' ? creditsResult.reason : null;
+  const creditsData = !creditsError ? creditsResult.value : null;
   renderQuota(data, creditsData, creditsError);
 }
 
@@ -331,6 +366,9 @@ async function runQuota() {
 async function main() {
   try {
     await runQuota();
+  } catch (err) {
+    console.error(`查询失败：${err.message}`);
+    process.exitCode = 1;
   } finally {
     await pauseIfInteractiveSeaLaunch();
   }

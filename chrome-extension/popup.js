@@ -4,10 +4,8 @@
  * Codex 额度查询 Chrome 插件（popup 界面逻辑）
  *
  * 数据来源与调用链（认证/接口封装在 core.js，与 background.js 共用）：
- *   打开 popup → 先读本地缓存（chrome.storage.local.lastQuota）秒显上次结果
- *   → 再走完整链路刷新：会话令牌 → accounts/check 定位账户 → wham/usage
- *   → wham/rate-limit-reset-credits（重置卡，失败不影响主数据）。
- *   刷新成功后更新缓存并把「剩余用量」写到工具栏图标角标。
+ *   打开 popup → 请求后台确认登录身份和所选账户 → 展示同账户缓存
+ *   → 后台先发布额度，再发布重置卡；本文件只负责展示与账户选择。
  *
  * 展示口径：与官方界面一致，以「剩余」为主（剩余 = 100 - used_percent）。
  *
@@ -16,21 +14,19 @@
 
 import {
   EXPIRING_SOON_MS,
+  CACHE_MAX_AGE_MS,
+  QUERY_MESSAGE,
+  UPDATE_MESSAGE,
   PLAN_TYPE_NAMES,
-  applyBadge,
   clampPercent,
-  fetchAccount,
-  fetchCredits,
-  fetchSessionToken,
-  fetchUsage,
   formatDuration,
   formatUnix,
 } from './core.js';
 
 /** 官方用量页地址：弹窗底部链接与重置卡购买入口共用 */
 const OFFICIAL_USAGE_URL = 'https://chatgpt.com/codex/cloud/settings/analytics#usage';
-/** 本地缓存键：上次完整查询结果 */
-const CACHE_KEY = 'lastQuota';
+let loading = false;
+let requestedAccountId = null;
 
 /** 每秒刷新倒计时的定时器句柄；每次重新渲染前先清掉旧定时器 */
 let countdownTimer = null;
@@ -48,7 +44,7 @@ function renderWindow(prefix, win) {
   const fillEl = document.getElementById(`fill-${prefix}`);
   const resetEl = document.getElementById(`reset-${prefix}`);
 
-  if (!win || typeof win.used_percent !== 'number') {
+  if (!win || !Number.isFinite(win.used_percent)) {
     pctEl.textContent = '无数据';
     usedEl.textContent = '';
     fillEl.style.width = '0';
@@ -68,7 +64,7 @@ function renderWindow(prefix, win) {
   if (Number.isFinite(win.reset_at)) {
     viewState.windows[prefix] = win.reset_at * 1000;
   } else if (Number.isFinite(win.reset_after_seconds)) {
-    viewState.windows[prefix] = Date.now() + win.reset_after_seconds * 1000;
+    viewState.windows[prefix] = viewState.savedAt + win.reset_after_seconds * 1000;
   } else {
     viewState.windows[prefix] = null;
   }
@@ -86,6 +82,7 @@ function renderCredits(usage, creditsData, creditsError) {
   const purchaseEl = document.getElementById('purchase');
 
   purchaseEl.hidden = true;
+  purchaseEl.textContent = '';
   listEl.textContent = '';
 
   if (!creditsData) {
@@ -114,7 +111,7 @@ function renderCredits(usage, creditsData, creditsError) {
   }
 
   titleEl.className = '';
-  const available = (creditsData.credits || [])
+  const available = creditsData.credits
     .filter((card) => card.status === 'available')
     .map((card) => ({ ...card, expireMs: Date.parse(card.expires_at) }))
     // 到期时间缺失或无法解析的卡片排到最后，避免 NaN 参与排序和展示
@@ -216,25 +213,27 @@ function updateCountdowns() {
 
 /**
  * 渲染完整结果。
- * cached = true 表示数据来自本地缓存（秒开），"更新于"会标注缓存，
- * 等本次刷新成功后会用最新数据整体重渲染。
+ * 使用后台采集时刻显示更新时间；缓存的相对倒计时以该时刻为基准。
  */
-function renderQuota(data, creditsData, creditsError, cached = false) {
-  viewState = { windows: {}, cards: [] };
+function renderQuota(snapshot) {
+  const { usage: data, credits: creditsData, cached, savedAt } = snapshot;
+  const creditsError = snapshot.creditsError ? { message: snapshot.creditsError } : null;
+  viewState = { windows: {}, cards: [], savedAt };
   const rl = data.rate_limit || {};
 
   document.getElementById('plan').textContent = PLAN_TYPE_NAMES[data.plan_type] || data.plan_type || '未知计划';
 
   // 顶部「剩余用量」取两个窗口剩余值中较小的一个，与官方界面口径一致
   const remainings = [rl.primary_window, rl.secondary_window]
-    .filter((win) => win && typeof win.used_percent === 'number')
+    .filter((win) => win && Number.isFinite(win.used_percent))
     .map((win) => 100 - clampPercent(win.used_percent));
   document.getElementById('summary').textContent =
     remainings.length > 0 ? `剩余用量 ${Math.min(...remainings).toFixed(0)}%` : '';
 
   document.getElementById('email').textContent = data.email || '';
+  const stale = Date.now() - savedAt > CACHE_MAX_AGE_MS || snapshot.lastError;
   document.getElementById('updated').textContent =
-    `更新于 ${new Date().toLocaleTimeString('zh-CN')}${cached ? '（缓存）' : ''}`;
+    `更新于 ${formatUnix(savedAt)}${stale ? '（过期数据）' : cached ? '（缓存）' : ''}`;
   document.getElementById('limit-warn').hidden = !rl.limit_reached;
   document.getElementById('spend-warn').hidden = !(data.spend_control && data.spend_control.reached);
 
@@ -243,8 +242,9 @@ function renderQuota(data, creditsData, creditsError, cached = false) {
 
   // Code review 配额：接口里该字段为空就不显示整块
   const crSection = document.getElementById('section-cr');
-  const cr = data.code_review_rate_limit;
-  const hasCr = !!(cr && typeof cr.used_percent === 'number');
+  const crLimit = data.code_review_rate_limit;
+  const cr = crLimit && (crLimit.primary_window || crLimit.secondary_window || crLimit);
+  const hasCr = !!(cr && Number.isFinite(cr.used_percent));
   crSection.hidden = !hasCr;
   if (hasCr) {
     renderWindow('cr', cr);
@@ -279,6 +279,13 @@ function renderQuota(data, creditsData, creditsError, cached = false) {
   }
 
   renderCredits(data, creditsData, creditsError);
+  if (snapshot.creditsPending) {
+    document.getElementById('credits').hidden = false;
+    document.getElementById('credits-title').textContent = '重置卡：查询中…';
+    document.getElementById('credits-title').className = '';
+  } else if (creditsData && snapshot.creditsSavedAt) {
+    document.getElementById('credits-title').textContent += `（更新于 ${formatUnix(snapshot.creditsSavedAt)}）`;
+  }
 
   document.getElementById('content').hidden = false;
   if (countdownTimer) {
@@ -295,82 +302,105 @@ function showError(message) {
   statusEl.className = 'error';
   statusEl.textContent = message;
   document.getElementById('content').hidden = true;
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = null;
+  viewState = null;
 }
 
-/** 把本次成功结果写入本地缓存，供下次打开秒显和后台角标刷新合并 */
-async function saveCache(usage, creditsData) {
-  try {
-    await chrome.storage.local.set({
-      [CACHE_KEY]: { usage, credits: creditsData, savedAt: Date.now() },
-    });
-  } catch {
-    // 缓存写入失败不影响本次展示
+/** 展示可查询账户；首次多账户查询保留“请选择”，不默认第一个。 */
+function renderAccounts(accounts, selectedId) {
+  const select = document.getElementById('account');
+  select.textContent = '';
+  if (!selectedId) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '请选择账户';
+    option.disabled = true;
+    option.selected = true;
+    select.appendChild(option);
   }
+  for (const account of accounts) {
+    const option = document.createElement('option');
+    option.value = account.account_id;
+    option.textContent = account.name || account.account_id;
+    option.selected = account.account_id === selectedId;
+    select.appendChild(option);
+  }
+  document.getElementById('account-row').hidden = accounts.length === 0;
+  select.disabled = loading;
 }
 
-/** 秒开：先渲染上次缓存的结果（若有），再走完整刷新 */
-async function showCache() {
-  try {
-    const stored = (await chrome.storage.local.get(CACHE_KEY))[CACHE_KEY];
-    if (stored && stored.usage) {
-      document.getElementById('status').hidden = true;
-      renderQuota(stored.usage, stored.credits || null, null, true);
-    }
-  } catch {
-    // 缓存读取失败不影响正常查询
+/** 后台只发布已匹配身份的快照；失配通知先隐藏上一账户的数据。 */
+function receiveSnapshot(snapshot) {
+  // 切换账户可能要等待后台旧查询结束，等待期间不得回显旧账户结果。
+  if (loading && requestedAccountId && snapshot.accountId &&
+      snapshot.accountId !== requestedAccountId) return;
+  renderAccounts(snapshot.accounts || [], snapshot.accountId);
+  if (snapshot.clearContent) {
+    document.getElementById('content').hidden = true;
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = null;
+    viewState = null;
+    if (snapshot.error) showError(snapshot.error);
+    return;
   }
+  if (!snapshot.usage) return;
+  renderQuota(snapshot);
+  const statusEl = document.getElementById('status');
+  const warning = snapshot.lastError || snapshot.cacheError;
+  statusEl.hidden = !warning && !snapshot.cached;
+  statusEl.className = warning ? 'error' : 'status';
+  statusEl.textContent = warning ? '刷新提示：' + warning : '刷新中…';
 }
 
 /**
- * 入口：拿网页会话令牌 → 定位账户 → 调限额接口 → 渲染并写缓存/角标；
- * 重置卡尽力获取，失败不影响主数据；每一步失败都有可操作的提示。
+ * 弹窗入口：后台完成身份确认、请求和缓存写入，本地按钮防止重复查询。
+ * 失败后仅保留后台已确认属于当前账户的缓存，过期登录不保留内容。
  */
-async function load() {
+async function load(selectedId) {
+  if (loading) return;
+  loading = true;
+  requestedAccountId = selectedId || null;
+  const refresh = document.getElementById('refresh');
+  const select = document.getElementById('account');
   const statusEl = document.getElementById('status');
-  if (statusEl.hidden) {
-    // 秒开模式下不打断已展示的缓存内容，只在头部显示刷新状态
-    statusEl.className = 'status';
-    statusEl.textContent = '刷新中…';
-    statusEl.hidden = false;
-  } else {
-    statusEl.className = 'status';
-    statusEl.textContent = '查询中…';
-  }
-  document.getElementById('content').hidden = true;
-
+  refresh.disabled = true;
+  select.disabled = true;
+  statusEl.hidden = false;
+  statusEl.className = 'status';
+  statusEl.textContent = '刷新中…';
+  if (selectedId) document.getElementById('content').hidden = true;
   try {
-    const session = await fetchSessionToken();
-    const token = session.accessToken;
-    const account = await fetchAccount(token);
-    const usage = await fetchUsage(token, account.account_id);
-
-    // 重置卡接口失败不影响窗口展示，失败原因会原样显示在重置卡区域
-    let creditsData = null;
-    let creditsError = null;
-    try {
-      creditsData = await fetchCredits(token, account.account_id);
-    } catch (creditsErr) {
-      creditsError = creditsErr;
+    const result = await chrome.runtime.sendMessage({ type: QUERY_MESSAGE, accountId: selectedId });
+    if (!result) throw new Error('后台没有返回查询结果，请重新加载插件。');
+    if (result.snapshot) receiveSnapshot(result.snapshot);
+    if (!result.ok) {
+      if (result.accounts && result.accounts.length) renderAccounts(result.accounts, null);
+      if (result.clearContent || !result.snapshot) {
+        showError(result.error);
+      } else {
+        statusEl.hidden = false;
+        statusEl.className = 'error';
+        statusEl.textContent = '刷新失败（保留上次数据）：' + result.error;
+      }
     }
-
-    statusEl.hidden = true;
-    renderQuota(usage, creditsData, creditsError);
-    await saveCache(usage, creditsData);
-    await applyBadge(usage);
   } catch (err) {
-    // 秒开失败时保留缓存内容，仅把错误写进头部状态行
-    const cachedVisible = !document.getElementById('content').hidden;
-    if (cachedVisible) {
-      statusEl.className = 'status';
-      statusEl.textContent = `刷新失败：${err instanceof TypeError ? '网络请求失败' : err.message.split('\n')[0]}`;
-    } else if (err instanceof TypeError) {
-      showError('网络请求失败，请检查网络或代理后重试。');
-    } else {
-      showError(err.message);
-    }
+    showError('后台查询失败：' + err.message);
+  } finally {
+    loading = false;
+    requestedAccountId = null;
+    refresh.disabled = false;
+    select.disabled = false;
   }
 }
 
-document.getElementById('refresh').addEventListener('click', load);
-showCache();
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (sender.id === chrome.runtime.id && message && message.type === UPDATE_MESSAGE) {
+    receiveSnapshot(message.snapshot);
+    sendResponse({ received: true });
+  }
+  return false;
+});
+document.getElementById('refresh').addEventListener('click', () => load());
+document.getElementById('account').addEventListener('change', (event) => load(event.target.value));
 load();

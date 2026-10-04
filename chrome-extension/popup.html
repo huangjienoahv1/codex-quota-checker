@@ -30,6 +30,9 @@
       font-size: 12px;
     }
     #refresh:hover { background: #444746; }
+    #refresh:disabled { opacity: 0.6; cursor: wait; }
+    .account-row { margin-bottom: 10px; }
+    #account { width: 100%; margin-top: 4px; background: #35373b; color: #e8eaed; border: 1px solid #5f6368; border-radius: 4px; padding: 4px; }
     .status { color: #9aa0a6; padding: 8px 0; }
     .error {
       color: #f28b82;
@@ -125,6 +128,11 @@
     <h1>Codex 额度查询</h1>
     <button id="refresh">刷新</button>
   </header>
+
+  <div id="account-row" class="account-row" hidden>
+    <label for="account">查询账户</label>
+    <select id="account" aria-label="选择要查询的账户"></select>
+  </div>
 
   <div id="status" class="status">查询中…</div>
 
