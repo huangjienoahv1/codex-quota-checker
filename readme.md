@@ -41,25 +41,37 @@ Codex 额度查询    2026/10/4 10:22:02
 
 接口结构异常时会明确报错，不能识别的重置卡数据不会显示成“0 张”。主额度失败或结构不可识别时退出码为 `1`；仅重置卡失败时仍展示额度，退出码为 `0`，并尽可能展示额度接口提供的汇总数量。`--json` 保留原始响应，同时通过 `usage_error` / `credits_error` 标注错误。
 
-### 打包成免 Node 的单文件 exe（可选）
+### 免 Node 的 Windows / macOS 版本
 
-exe 只封装查询逻辑，**运行它的机器仍需安装 Codex CLI 并用 ChatGPT 账号登录过**（存在 `~/.codex/auth.json`）——适合发给同样在用 Codex 的合租卡友。
+使用者不需要安装 Node.js。程序读取本机的 `~/.codex/auth.json`（或 `CODEX_HOME` 指定目录），需要有效的 ChatGPT OAuth 登录凭据；只保存在 macOS 钥匙串中的凭据暂不支持读取。
 
-构建（构建机需 Node.js ≥ 22，过程需联网拉取 postject，仅构建期依赖）：
+| 平台 | 文件 | 使用方式 |
+|---|---|---|
+| Windows x64 | `codex-quota.exe` | 双击，查询结束按回车退出 |
+| Mac 苹果芯片（M 系列，arm64） | `codex-quota.command` | 解压后双击，在终端展示结果 |
+| Mac Intel（x64） | `codex-quota.command` | 解压后双击，在终端展示结果 |
+
+Mac 两种架构的程序必须下载对应的包。Mac 包使用 `.tar.gz` 保留执行权限，用归档实用工具解压。如果权限丢失，可在所在目录执行 `chmod +x codex-quota.command`。命令行带 `--json` 参数时不暂停，便于脚本调用。
+
+Windows 产物未做代码签名；Mac 只做临时签名，未做 Apple 开发者签名及公证。首次打开可能被系统拦截，确认来源后按系统安全提示允许运行。
+
+#### 在本机构建
+
+构建机需要 Node.js ≥ 22（包含 npm/npx），并联网下载固定版本的 `postject@1.0.0-alpha.6`。在目标 Windows 或 Mac 上执行同一命令：
 
 ```text
 node scripts/build-exe.js
 ```
 
-构建仅支持 Windows，使用当前运行脚本的 Node 同时生成 blob 和程序壳，注入工具固定为 `postject@1.0.0-alpha.6`。产物先在临时目录构建并校验，再替换稳定 EXE；构建失败保留原 EXE，临时目录自动清理。当前 Node 安装需包含 npm/npx。
+Windows 输出 `local/dist/codex-quota.exe`，Mac 输出 `local/dist/codex-quota.command`。产物架构跟随构建时的 Node 架构；Mac 构建需要系统提供 `codesign`。本入口不跨系统编译。
 
-产物：`local/dist/codex-quota.exe`（约 100 MB，单文件）。双击运行，查完按回车退出；命令行带参数（如 `--json`）则不暂停，可直接脚本化调用。
+构建先生成临时产物，完成注入校验、Mac 签名校验及隔离凭据的启动检查后才替换稳定文件；失败保留原产物。程序不打包个人凭据，也不会在构建时查询真实账号。
 
-注意事项：
+#### GitHub 自动构建
 
-- exe 未做代码签名，首次运行可能触发 Windows SmartScreen 提示：点「更多信息 → 仍要运行」；
-- 个别杀毒软件可能对注入式打包的 exe 误报，加入白名单即可；
-- 产物架构与构建机一致（x64 机器构建出 x64 exe）。
+仓库提供 `.github/workflows/build-native.yml`。推送到 `codex/**` 分支时自动运行，也可在 GitHub Actions 中手动运行 **Build native packages**。它分别在 Windows、苹果芯片 Mac、Intel Mac 上构建，并上传三份独立压缩包及 SHA-256 校验文件到该次运行的 Artifacts；不会自动发布正式 Release。
+
+自动构建的启动检查使用空凭据目录，只验证程序能运行并正确报告缺少凭据。真实账号查询和 Mac 双击体验仍需在对应设备验收。
 
 > 重置卡的标题语言跟随账号语言（中文账号显示「完全重置（每周 + 5 小时）」，英文账号显示「Full reset (Weekly + 5 hr)」）。
 

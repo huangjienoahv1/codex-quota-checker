@@ -1,0 +1,80 @@
+name: Build native packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'codex/**'
+    paths:
+      - 'local/codex-quota.js'
+      - 'scripts/build-exe.js'
+      - 'sea-config.json'
+      - '.github/workflows/build-native.yml'
+      - 'LICENSE'
+      - 'readme.md'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win32
+            arch: x64
+            package: codex-quota-windows-x64
+          - os: macos-15
+            platform: darwin
+            arch: arm64
+            package: codex-quota-macos-arm64
+          - os: macos-15-intel
+            platform: darwin
+            arch: x64
+            package: codex-quota-macos-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.0'
+          architecture: ${{ matrix.arch }}
+      - name: 检查目标平台与架构
+        env:
+          TARGET_PLATFORM: ${{ matrix.platform }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: node -e "if (process.platform !== process.env.TARGET_PLATFORM || process.arch !== process.env.TARGET_ARCH) process.exit(1); console.log(process.platform, process.arch, process.version)"
+      - name: 原生构建与隔离凭据启动检查
+        run: node scripts/build-exe.js
+      - name: 打包 Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PACKAGE_NAME: ${{ matrix.package }}
+        run: |
+          if ($PSVersionTable.PSVersion.Major -lt 7) { throw '需要 PowerShell 7' }
+          Copy-Item LICENSE,readme.md local/dist/
+          $archive = "local/$env:PACKAGE_NAME.zip"
+          Compress-Archive -Path local/dist/codex-quota.exe,local/dist/LICENSE,local/dist/readme.md -DestinationPath $archive
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          "$hash  $env:PACKAGE_NAME.zip" | Set-Content -Encoding utf8NoBOM "local/$env:PACKAGE_NAME.sha256"
+      - name: 打包 Mac 并保留执行权限
+        if: runner.os == 'macOS'
+        env:
+          PACKAGE_NAME: ${{ matrix.package }}
+        run: |
+          cp LICENSE readme.md local/dist/
+          tar -czf "local/$PACKAGE_NAME.tar.gz" -C local/dist codex-quota.command LICENSE readme.md
+          cd local
+          shasum -a 256 "$PACKAGE_NAME.tar.gz" > "$PACKAGE_NAME.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package }}
+          path: |
+            local/${{ matrix.package }}.zip
+            local/${{ matrix.package }}.tar.gz
+            local/${{ matrix.package }}.sha256
+          if-no-files-found: error
+          retention-days: 30
